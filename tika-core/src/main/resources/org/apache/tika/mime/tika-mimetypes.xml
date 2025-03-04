@@ -408,6 +408,15 @@
     <glob pattern="*.json"/>
   </mime-type>
 
+  <mime-type type="application/jsonl">
+    <_comment>JSON Lines file</_comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.jsonl"/>
+    <magic priority="50">
+      <match value='{"' type="string" offset="0"/>
+    </magic>
+  </mime-type>
+
   <mime-type type="application/manifest+json">
     <_comment>Web Application Manifest file</_comment>
     <sub-class-of type="application/json"/>
