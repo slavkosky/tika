@@ -35,6 +35,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
+import org.xml.sax.helpers.AttributesImpl;
 
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.metadata.Metadata;
@@ -54,73 +55,153 @@ public class JsonLinesParser implements Parser {
 
     public static final String JSONL_MIME_TYPE = "application/jsonl";
 
+    private static final AttributesImpl EMPTY_ATTRIBUTES = new AttributesImpl();
+
     @Override
     public Set<MediaType> getSupportedTypes(ParseContext context) {
         return SUPPORTED_TYPES;
     }
 
-    private void processJsonNode(JsonNode node, XHTMLContentHandler xhtml, String fieldName, boolean isFirstField)
+    private void processJsonNode(JsonNode node, XHTMLContentHandler xhtml, String fieldName, String parentId, boolean isFirstField)
             throws SAXException {
         if (node.isObject()) {
-            // Start a new nested dl for this object
-            xhtml.startElement("dl");
+            AttributesImpl dlAttributes = new AttributesImpl();
+            String dlId = parentId != null ? parentId : "";
+
+            if (fieldName != null && !fieldName.isEmpty()) {
+                dlAttributes.addAttribute("", "id", "id", "CDATA", dlId);
+                dlAttributes.addAttribute("", "class", "class", "CDATA", fieldName);
+            } else {
+                dlAttributes.addAttribute("", "class", "class", "CDATA", "json-object");
+            }
+            xhtml.startElement("dl", dlAttributes);
 
             Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
             while (fields.hasNext()) {
                 Map.Entry<String, JsonNode> entry = fields.next();
-                String entryKey = entry.getKey();
+                String keyNode = entry.getKey();
                 JsonNode valueNode = entry.getValue();
 
-                // Skip empty values or "[]" values
-                String valueText = valueNode.asText();
-                if (valueText.isEmpty() || "[]".equals(valueText)) {
-                    continue;
+                if (valueNode.isArray() && valueNode.isEmpty()) {
+                    continue; // Skip empty arrays
+                } else if (valueNode.isObject() && valueNode.isEmpty()) {
+                    continue; // Skip empty objects
+                } else if (!valueNode.isArray() && !valueNode.isObject() &&
+                        (valueNode.asText().isEmpty() || "[]".equals(valueNode.asText()))) {
+                    continue; // Skip empty text values
                 }
 
-                // Create dt element with microdata attribute
-                xhtml.startElement("dt", "itemprop", entryKey);
+                String valueStr = valueNode.isValueNode() ? valueNode.asText() : "";
+                String elementId = parentId != null ? parentId + "-" + keyNode : keyNode;
+                AttributesImpl dtAttributes = new AttributesImpl();
+                dtAttributes.addAttribute("", "id", "id", "CDATA", elementId);
+                dtAttributes.addAttribute("", "itemprop", "itemprop", "CDATA", keyNode);
 
-                // Process the first field differently using <dfn> tag
+                xhtml.startElement("dt", dtAttributes);
                 if (isFirstField) {
-                    xhtml.startElement("dfn");
-                    xhtml.characters(valueText);
+                    xhtml.startElement("dfn", EMPTY_ATTRIBUTES);
+                    xhtml.characters(valueNode.asText());
                     xhtml.endElement("dfn");
-                    isFirstField = false; // Only apply to the very first field
+                    isFirstField = false;
                 } else {
-                    processJsonNode(valueNode, xhtml, entryKey, false);
+                    xhtml.characters(valueStr);
                 }
-
                 xhtml.endElement("dt");
 
-                // Skip dd element for the first field since it's already processed in dt
-                if (!isFirstField) {
-                    // Create dd element with microdata attribute
-                    xhtml.startElement("dd", "itemprop", entryKey);
-                    processJsonNode(valueNode, xhtml, entryKey, false);
+                // For non-primitive values, we'll render them in the dd element
+                if (valueNode.isArray() || valueNode.isObject()) {
+                    AttributesImpl ddAttributes = new AttributesImpl();
+                    ddAttributes.addAttribute("", "id", "id", "CDATA", elementId);
+                    ddAttributes.addAttribute("", "itemprop", "itemprop", "CDATA", keyNode);
+                    xhtml.startElement("dd", ddAttributes);
+                    processJsonNode(valueNode, xhtml, keyNode, elementId, false);
                     xhtml.endElement("dd");
                 }
             }
-
             xhtml.endElement("dl");
         } else if (node.isArray()) {
-            // Handle json values with child objects
-            xhtml.startElement("ul");
+            AttributesImpl ulAttributes = new AttributesImpl();
+            xhtml.startElement("ul", ulAttributes);
+
+            int itemIndex = 0;
             for (JsonNode element : node) {
-                xhtml.startElement("li");
-                processJsonNode(element, xhtml, null, false);
+                // For array items, create a meaningful ID based on the value if it's a simple value
+                String itemValue = element.isValueNode() ? element.asText() : String.valueOf(itemIndex);
+                String itemId = fieldName + "-" + sanitizeForId(itemValue);
+
+                AttributesImpl liAttributes = new AttributesImpl();
+                liAttributes.addAttribute("", "id", "id", "CDATA", itemId);
+
+                xhtml.startElement("li", liAttributes);
+
+                // For object type array items, use a more structured approach
+                if (element.isObject()) {
+                    AttributesImpl dlAttributes = new AttributesImpl();
+                    dlAttributes.addAttribute("", "class", "class", "CDATA", fieldName + "-list");
+                    xhtml.startElement("dl", dlAttributes);
+
+                    // Process object fields, combining relevant properties
+                    Iterator<Map.Entry<String, JsonNode>> fields = element.fields();
+                    String typeValue = null;
+                    String nameValue = null;
+                    String descValue = null;
+
+                    while (fields.hasNext()) {
+                        Map.Entry<String, JsonNode> entry = fields.next();
+                        String key = entry.getKey();
+                        JsonNode value = entry.getValue();
+
+                        if ("type".equals(key)) typeValue = value.asText();
+                        else if ("name".equals(key)) nameValue = value.asText();
+                        else if ("description".equals(key)) descValue = value.asText();
+                    }
+
+                    // Create combined type+name element
+                    if (typeValue != null && nameValue != null) {
+                        AttributesImpl dtAttributes = new AttributesImpl();
+                        dtAttributes.addAttribute("", "id", "id", "CDATA", typeValue + "_" + nameValue);
+                        dtAttributes.addAttribute("", "itemprop", "itemprop", "CDATA", "type+name");
+
+                        xhtml.startElement("dt", dtAttributes);
+                        xhtml.characters(typeValue + " " + nameValue);
+                        xhtml.endElement("dt");
+                    }
+
+                    // Create description element
+                    if (descValue != null) {
+                        AttributesImpl ddAttributes = new AttributesImpl();
+                        ddAttributes.addAttribute("", "id", "id", "CDATA", "description-" + nameValue);
+                        ddAttributes.addAttribute("", "itemprop", "itemprop", "CDATA", "description");
+
+                        xhtml.startElement("dd", ddAttributes);
+                        xhtml.characters(descValue);
+                        xhtml.endElement("dd");
+                    }
+
+                    xhtml.endElement("dl");
+                } else {
+                    // For simple value array items
+                    xhtml.characters(element.asText());
+                }
+
                 xhtml.endElement("li");
+                itemIndex++;
             }
             xhtml.endElement("ul");
         } else {
-            // Base case: simple value
-            String value = node.asText();
-            // Skip empty values or "[]" values
-            if (!value.isEmpty() && !"[]".equals(value)) {
-                xhtml.characters(value);
-            }
+            xhtml.characters(node.asText());
         }
     }
 
+    private String sanitizeForId(String input) {
+        if (input == null || input.isEmpty()) {
+            return "empty";
+        }
+        String limited = input.length() > 30 ? input.substring(0, 30) : input;
+        return limited.replaceAll("[^A-Za-z0-9_-]", "-")
+                .replaceAll("-{2,}", "-")
+                .replaceAll("(^-|-$)", "");
+    }
 
     @Override
     public void parse(InputStream stream,
@@ -129,17 +210,13 @@ public class JsonLinesParser implements Parser {
                       ParseContext context)
             throws IOException, SAXException, TikaException {
 
-        // Basic metadata from older logic
         metadata.set(Metadata.CONTENT_TYPE, JSONL_MIME_TYPE);
 
         XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
         xhtml.startDocument();
 
-        // Collect unique header filenames here
         Set<String> uniqueHeaders = new LinkedHashSet<>();
-        String moduleValue = null;
-        String headerFieldName = null;
-        String moduleFieldName = null;
+        String moduleValue = null, headerFieldName = null, moduleFieldName = null;
 
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, "UTF-8"))) {
             ObjectMapper mapper = new ObjectMapper();
@@ -148,15 +225,14 @@ public class JsonLinesParser implements Parser {
             while ((line = reader.readLine()) != null) {
                 line = line.trim();
                 if (line.isEmpty()) {
-                    continue;  // skip blank lines
+                    continue;
                 }
 
                 JsonNode rootNode;
                 try {
                     rootNode = mapper.readTree(line);
-                } catch (JsonProcessingException e) {
-                    // log invalid lines in the output as-is:
-                    xhtml.element("p", e.getMessage());
+                } catch (JsonProcessingException ex) {
+                    xhtml.element("p", ex.getMessage());
                     continue;
                 }
 
@@ -200,23 +276,52 @@ public class JsonLinesParser implements Parser {
                 }
 
                 // Output fields to XHTML with new format
-                xhtml.startElement("div");
-                xhtml.startElement("dl");
+                xhtml.startElement("div", EMPTY_ATTRIBUTES);
+                xhtml.startElement("dl", EMPTY_ATTRIBUTES);
 
                 // Process the first field specially (using dfn tag)
                 if (!fieldsList.isEmpty()) {
                     Map.Entry<String, JsonNode> firstField = fieldsList.get(0);
                     String firstFieldKey = firstField.getKey();
                     JsonNode firstFieldValue = firstField.getValue();
-
-                    xhtml.startElement("dt", "itemprop", firstFieldKey);
-                    xhtml.startElement("dfn");
-                    xhtml.characters(firstFieldValue.asText());
+                    String firstFieldValueStr = firstFieldValue.asText();
+                    AttributesImpl dtAttributes = new AttributesImpl();
+                    dtAttributes.addAttribute("", "id", "id", "CDATA", firstFieldValueStr + "-" + firstFieldKey);
+                    dtAttributes.addAttribute("", "itemprop", "itemprop", "CDATA", firstFieldKey);
+                    xhtml.startElement("dt", dtAttributes);
+                    xhtml.startElement("dfn", EMPTY_ATTRIBUTES);
+                    xhtml.characters(firstFieldValueStr);
                     xhtml.endElement("dfn");
                     xhtml.endElement("dt");
 
-                    // Skip the first field in the main loop since we've already processed it
-                    processNodeFields(xhtml, rootNode, fieldsList, 0);
+                    // Process remaining fields using the first field value as parent ID
+                    for (int i = 1; i < fieldsList.size(); i++) {
+                        Map.Entry<String, JsonNode> entry = fieldsList.get(i);
+                        String fieldKey = entry.getKey();
+                        JsonNode valueNode = entry.getValue();
+
+                        // Skip empty values
+                        if ((valueNode.isArray() && valueNode.isEmpty()) ||
+                                (valueNode.isObject() && valueNode.isEmpty()) ||
+                                (!valueNode.isArray() && !valueNode.isObject() &&
+                                        (valueNode.asText().isEmpty() || "[]".equals(valueNode.asText())))) {
+                            continue;
+                        }
+
+                        AttributesImpl ddAttributes = new AttributesImpl();
+                        ddAttributes.addAttribute("", "id", "id", "CDATA", firstFieldValueStr + "-" + fieldKey);
+                        ddAttributes.addAttribute("", "itemprop", "itemprop", "CDATA", fieldKey);
+
+                        xhtml.startElement("dd", ddAttributes);
+
+                        if (valueNode.isArray() || valueNode.isObject()) {
+                            processJsonNode(valueNode, xhtml, fieldKey, firstFieldValueStr, false);
+                        } else {
+                            xhtml.characters(valueNode.asText());
+                        }
+
+                        xhtml.endElement("dd");
+                    }
                 }
 
                 xhtml.endElement("dl");
@@ -224,7 +329,7 @@ public class JsonLinesParser implements Parser {
             }
         }
 
-        // After reading the entire file, store metadata using the field names from JSON
+        // After reading the entire file, store file-level metadata using field names from JSON
         if (moduleValue != null && moduleFieldName != null) {
             metadata.set(moduleFieldName, moduleValue);
 
@@ -236,32 +341,5 @@ public class JsonLinesParser implements Parser {
         }
 
         xhtml.endDocument();
-    }
-
-    private void processNodeFields(XHTMLContentHandler xhtml, JsonNode rootNode,
-                                  List<Map.Entry<String, JsonNode>> fieldsList, int skipFirstN)
-            throws SAXException {
-        for (int i = skipFirstN + 1; i < fieldsList.size(); i++) {
-            Map.Entry<String, JsonNode> entry = fieldsList.get(i);
-            String fieldKey = entry.getKey();
-            JsonNode valueNode = entry.getValue();
-
-            // Skip empty values or "[]" values
-            String valueText = valueNode.asText();
-            if (valueText.isEmpty() || "[]".equals(valueText)) {
-                continue;
-            }
-
-            // Add dd element with microdata attribute
-            xhtml.startElement("dd", "itemprop", fieldKey);
-
-            if (valueNode.isArray() || valueNode.isObject()) {
-                processJsonNode(valueNode, xhtml, fieldKey, false);
-            } else {
-                xhtml.characters(valueText);
-            }
-
-            xhtml.endElement("dd");
-        }
     }
 }

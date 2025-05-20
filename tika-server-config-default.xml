@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<properties>
+    <server>
+        <params>
+            <port>9998</port>
+            <host>localhost</host>
+            <id>tika-server</id>
+            <digest>sha256</digest>
+            <digestMarkLimit>1000000</digestMarkLimit>
+            <logLevel>info</logLevel>
+            <returnStackTrace>false</returnStackTrace>
+            <noFork>false</noFork>
+            <taskTimeoutMillis>300000</taskTimeoutMillis>
+            <minimumTimeoutMillis>30000</minimumTimeoutMillis>
+            <taskPulseMillis>10000</taskPulseMillis>
+            <maxForkedStartupMillis>120000</maxForkedStartupMillis>
+            <maxRestarts>-1</maxRestarts>
+            <maxFiles>100000</maxFiles>
+            <javaPath>"C:\Program Files\Java\jdk-23\bin\java.exe"</javaPath>
+            <forkedJvmArgs>
+                <arg>-Xmx4g</arg>
+                <arg>-Dlog4j.configurationFile=k:\tika\tika-server\tika-server-standard\target\classes\log4j2.xml</arg>
+            </forkedJvmArgs>
+        </params>
+    </server>
+</properties>

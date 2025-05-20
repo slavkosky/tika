@@ -1,0 +1,1 @@
+java -jar "K:\tika\tika-server\tika-server-standard\target\tika-server-standard-4.0.0-SNAPSHOT.jar"
