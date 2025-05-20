@@ -16,11 +16,11 @@
  */
 package org.apache.tika.detect.zip;
 
-import java.io.BufferedInputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -71,7 +71,7 @@ public class DefaultZipContainerDetector implements Detector {
     //this has to be > 100,000 to handle some of the iworks files
     //in our unit tests
     @Field
-    int markLimit = 16 * 1024 * 1024;
+    int markLimit = -1;//16 * 1024 * 1024;
 
     private transient ServiceLoader loader;
 
@@ -181,19 +181,38 @@ public class DefaultZipContainerDetector implements Detector {
 
             if (TikaInputStream.isTikaInputStream(input)) {
                 TikaInputStream tis = TikaInputStream.cast(input);
-                if (markLimit < 0) {
-                    tis.getFile();
-                }
-                if (tis.hasFile()) {
+                if (markLimit < 1 || tis.hasFile()) {
                     return detectZipFormatOnFile(tis, metadata);
+                } else {
+                    return tryStreaming(tis, metadata);
                 }
+            } else {
+                LOG.warn("Applying streaming detection in DefaultZipContainerDetector. " +
+                            "This can lead to imprecise detection. Please consider using a TikaInputStream");
+                return detectStreaming(input, metadata);
             }
-            return detectStreaming(input, metadata);
         } else if (!type.equals(MediaType.OCTET_STREAM)) {
             return type;
         } else {
             return detectCompressorFormat(prefix, length);
         }
+    }
+
+    private MediaType tryStreaming(TikaInputStream tis, Metadata metadata) throws IOException {
+        BoundedInputStream boundedInputStream = new BoundedInputStream(markLimit, tis);
+        boundedInputStream.mark(markLimit);
+        MediaType mt = null;
+        //try streaming detect
+        try {
+            mt = detectStreaming(boundedInputStream, metadata, false);
+            if (! boundedInputStream.hasHitBound()) {
+                return mt;
+            }
+        } finally {
+            boundedInputStream.reset();
+        }
+        //spool to disk
+        return detectZipFormatOnFile(tis, metadata);
     }
 
     /**
@@ -207,7 +226,7 @@ public class DefaultZipContainerDetector implements Detector {
     private MediaType detectZipFormatOnFile(TikaInputStream tis, Metadata metadata) {
         ZipFile zip = null;
         try {
-            zip = ZipFile.builder().setFile(tis.getFile()).get(); // TODO: hasFile()?
+            zip = ZipFile.builder().setFile(tis.getFile()).get();
 
             for (ZipContainerDetector zipDetector : getDetectors()) {
                 MediaType type = zipDetector.detect(zip, tis);
@@ -239,15 +258,13 @@ public class DefaultZipContainerDetector implements Detector {
             return MediaType.APPLICATION_ZIP;
         }
         if (LOG.isDebugEnabled()) {
-            LOG.debug("zip file failed to open; attempting streaming detect");
+            LOG.debug("zip file failed to open; attempting streaming detect. Results may be imprecise");
         }
-        if (zip == null) {
-            //problem opening zip file (truncated?)
-            try (InputStream is = new BufferedInputStream(Files.newInputStream(tis.getPath()))) {
-                return detectStreaming(is, metadata);
-            } catch (IOException e) {
-                //swallow
-            }
+        //problem opening zip file (truncated?)
+        try {
+            return detectStreamingFromPath(tis.getPath(), metadata, false);
+        } catch (IOException e) {
+            //swallow
         }
         return MediaType.APPLICATION_ZIP;
 
@@ -293,6 +310,34 @@ public class DefaultZipContainerDetector implements Detector {
         return finalDetect(detectContext);
     }
 
+    MediaType detectStreamingFromPath(Path p, Metadata metadata, boolean allowStoredEntries)
+            throws IOException {
+        StreamingDetectContext detectContext = new StreamingDetectContext();
+        try (ZipArchiveInputStream zis = new ZipArchiveInputStream(
+                Files.newInputStream(p), "UTF8", false, allowStoredEntries)) {
+            ZipArchiveEntry zae = zis.getNextEntry();
+            while (zae != null) {
+                MediaType mt = detect(zae, zis, detectContext);
+                if (mt != null) {
+                    return mt;
+                }
+                zae = zis.getNextEntry();
+            }
+        } catch (UnsupportedZipFeatureException zfe) {
+            if (allowStoredEntries == false &&
+                    zfe.getFeature() == UnsupportedZipFeatureException.Feature.DATA_DESCRIPTOR) {
+                return detectStreamingFromPath(p, metadata, true);
+            }
+        } catch (SecurityException e) {
+            throw e;
+        } catch (EOFException e) {
+            //truncated zip -- swallow
+        } catch (IOException e) {
+            //another option for a truncated zip
+        }
+
+        return finalDetect(detectContext);
+    }
 
     private MediaType detect(ZipArchiveEntry zae, ZipArchiveInputStream zis,
                              StreamingDetectContext detectContext) throws IOException {

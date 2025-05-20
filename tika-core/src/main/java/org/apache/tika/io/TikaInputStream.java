@@ -119,6 +119,11 @@ public class TikaInputStream extends TaggedInputStream {
     private int consecutiveEOFs = 0;
     private byte[] skipBuffer;
 
+    /**
+     * If the stream should be shielded from closing
+     */
+    private int closeShieldDepth = 0;
+
     //suffix of the file if known. This is used to create temp files
     //with the right suffixes. This should include the initial . as in ".doc"
     private String suffix = null;
@@ -264,6 +269,32 @@ public class TikaInputStream extends TaggedInputStream {
      */
     public static TikaInputStream get(InputStream stream) {
         return get(stream, new TemporaryResources(), null);
+    }
+
+    /**
+     * Casts or wraps the given stream to a TikaInputStream instance.
+     * This method can be used to access the functionality of this class
+     * even when given just a normal input stream instance.
+     * <p>
+     * Use this method instead of the
+     * {@link #get(InputStream, TemporaryResources, Metadata)} alternative when you
+     * <em>do</em> explicitly close the returned stream. The recommended
+     * access pattern is:
+     * <pre>
+     * try (TikaInputStream stream = TikaInputStream.get(...)) {
+     *     // process stream
+     * }
+     * </pre>
+     * <p>
+     * The given stream instance will be closed along with any other resources
+     * associated with the returned TikaInputStream instance when the
+     * {@link #close()} method is called by the try-with-resources statement.
+     *
+     * @param stream normal input stream
+     * @return a TikaInputStream instance
+     */
+    public static TikaInputStream get(InputStream stream, Metadata metadata) {
+        return get(stream, new TemporaryResources(), metadata);
     }
 
     /**
@@ -692,52 +723,55 @@ public class TikaInputStream extends TaggedInputStream {
      * @throws IOException
      */
     public Path getPath(int maxBytes) throws IOException {
-        if (path == null) {
-            if (position > 0) {
-                throw new IOException("Stream is already being read");
-            } else {
-                Path tmpFile = tmp.createTempFile(suffix);
-                if (maxBytes > -1) {
-                    this.mark(maxBytes);
-                    try (BoundedInputStream boundedInputStream =
-                                 new BoundedInputStream(maxBytes, this)) {
+        if (path != null) {
+            return path;
+        }
+        if (position > 0) {
+            throw new IOException("Stream is already being read");
+        } else {
+            Path tmpFile = tmp.createTempFile(suffix);
+            if (maxBytes > -1) {
+                try (BoundedInputStream boundedInputStream = new BoundedInputStream(maxBytes, this)) {
+                    boundedInputStream.mark(maxBytes);
+                    try {
                         Files.copy(boundedInputStream, tmpFile, REPLACE_EXISTING);
                         if (boundedInputStream.hasHitBound()) {
                             //tmpFile will be cleaned up when this TikaInputStream is closed
                             return null;
                         }
                     } finally {
-                        this.reset();
+                        boundedInputStream.reset();
                     }
-                } else {
-                    // Spool the entire stream into a temporary file
-                    Files.copy(this, tmpFile, REPLACE_EXISTING);
                 }
-                //successful so far, set tis' path to tmpFile
-                path = tmpFile;
-
-                // Create a new input stream and make sure it'll get closed
-                InputStream newStream = Files.newInputStream(path);
-                tmp.addResource(newStream);
-
-                // Replace the spooled stream with the new stream in a way
-                // that still ends up closing the old stream if or when the
-                // close() method is called. The closing of the new stream
-                // is already being handled as noted above.
-                final InputStream oldStream = in;
-                in = new BufferedInputStream(newStream) {
-                    @Override
-                    public void close() throws IOException {
-                        oldStream.close();
-                    }
-                };
-
-                // Update length to file size. Update position, mark
-                length = Files.size(path);
-                position = 0;
-                mark = -1;
+            } else {
+                // Spool the entire stream into a temporary file
+                Files.copy(this, tmpFile, REPLACE_EXISTING);
             }
+            //successful so far, set tis' path to tmpFile
+            path = tmpFile;
+
+            // Create a new input stream and make sure it'll get closed
+            InputStream newStream = Files.newInputStream(path);
+            tmp.addResource(newStream);
+
+            // Replace the spooled stream with the new stream in a way
+            // that still ends up closing the old stream if or when the
+            // close() method is called. The closing of the new stream
+            // is already being handled as noted above.
+            final InputStream oldStream = in;
+            in = new BufferedInputStream(newStream) {
+                @Override
+                public void close() throws IOException {
+                    oldStream.close();
+                }
+            };
+
+            // Update length to file size. Update position, mark
+            length = Files.size(path);
+            position = 0;
+            mark = -1;
         }
+
         return path;
     }
 
@@ -827,6 +861,9 @@ public class TikaInputStream extends TaggedInputStream {
 
     @Override
     public void close() throws IOException {
+        if (closeShieldDepth > 0) {
+            return;
+        }
         path = null;
         mark = -1;
 
@@ -853,6 +890,17 @@ public class TikaInputStream extends TaggedInputStream {
         }
     }
 
+    public void setCloseShield() {
+        this.closeShieldDepth++;
+    }
+
+    public void removeCloseShield() {
+        this.closeShieldDepth--;
+    }
+
+    public boolean isCloseShield() {
+        return closeShieldDepth > 0;
+    }
     @Override
     public String toString() {
         String str = "TikaInputStream of ";

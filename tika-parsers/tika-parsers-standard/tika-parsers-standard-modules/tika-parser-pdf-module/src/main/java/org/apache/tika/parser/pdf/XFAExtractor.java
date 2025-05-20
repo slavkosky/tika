@@ -121,7 +121,7 @@ class XFAExtractor {
             String fieldName = e.getKey();
             XFAField field = e.getValue();
             String displayFieldName =
-                    (field.toolTip == null || field.toolTip.trim().length() == 0) ? fieldName :
+                    (field.toolTip == null || field.toolTip.isBlank()) ? fieldName :
                             field.toolTip;
             String[] fieldValues = pdfObjRToValues.getValues(fieldName);
             if (fieldValues.length == 0) {
@@ -179,7 +179,7 @@ class XFAExtractor {
             }
         }
         String remainder = buffer.toString();
-        if (remainder.trim().length() > 0) {
+        if (!remainder.isBlank()) {
             xhtml.element("p", remainder);
         }
     }

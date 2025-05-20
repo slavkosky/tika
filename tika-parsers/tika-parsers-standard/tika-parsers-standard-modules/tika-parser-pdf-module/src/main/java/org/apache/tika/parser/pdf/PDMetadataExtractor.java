@@ -171,8 +171,8 @@ public class PDMetadataExtractor {
                     metadata.set(PDF.PDFX_VERSION, version);
                 }
                 String conformance = XMPSchemaPDFX.getPDFXConformance();
-                if (!StringUtils.isBlank(version)) {
-                    metadata.set(PDF.PDFX_CONFORMANCE, version);
+                if (!StringUtils.isBlank(conformance)) {
+                    metadata.set(PDF.PDFX_CONFORMANCE, conformance);
                 }
             }
         } catch (IOException e) {
@@ -307,13 +307,17 @@ public class PDMetadataExtractor {
             }
         }
         setNotNull(XMP.NICKNAME, basic.getNickname(), metadata);
-        setNotNull(XMP.RATING, basic.getRating(), metadata);
+        try {
+            setNotNull(XMP.RATING, basic.getRating(), metadata);
+        } catch (NumberFormatException e) {
+            //swallow TIKA-4401
+        }
         //TODO: find an example where basic.getThumbNail is not null
         //and figure out how to add that info
     }
 
     private static void setNotNull(Property property, String value, Metadata metadata) {
-        if (metadata.get(property) == null && value != null && value.trim().length() > 0) {
+        if (metadata.get(property) == null && value != null && !value.isBlank()) {
             metadata.set(property, decode(value));
         }
     }
